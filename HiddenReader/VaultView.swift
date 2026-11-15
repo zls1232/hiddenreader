@@ -15,6 +15,9 @@ struct VaultView: View {
     @State private var viewingVideo: VaultItem?
     @State private var deleting: VaultItem?
     @State private var showAlert = false
+    @State private var isSelecting = false
+    @State private var selectedIDs: Set<UUID> = []
+    @State private var confirmBatchDelete = false
 
     var body: some View {
         NavigationStack {
@@ -25,22 +28,46 @@ struct VaultView: View {
                     grid
                 }
 
-                Toggle("导入后删除相册原图", isOn: $store.deleteOriginals)
-                    .font(.footnote)
-                    .padding(.horizontal)
-                    .padding(.vertical, 8)
+                if isSelecting {
+                    selectionBar
+                } else {
+                    Toggle("导入后删除相册原图", isOn: $store.deleteOriginals)
+                        .font(.footnote)
+                        .padding(.horizontal)
+                        .padding(.vertical, 8)
+                }
             }
-            .navigationTitle("资料库")
+            .navigationTitle(isSelecting ? "已选 \(selectedIDs.count) 项" : "资料库")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("返回") { dismiss() }
+                    if isSelecting {
+                        Button("取消") {
+                            isSelecting = false
+                            selectedIDs.removeAll()
+                        }
+                    } else {
+                        Button("返回") { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showPicker = true
-                    } label: {
-                        Image(systemName: "plus")
+                    if isSelecting {
+                        Button(selectedIDs.count == store.items.count ? "取消全选" : "全选") {
+                            if selectedIDs.count == store.items.count {
+                                selectedIDs.removeAll()
+                            } else {
+                                selectedIDs = Set(store.items.map { $0.id })
+                            }
+                        }
+                    } else {
+                        HStack(spacing: 16) {
+                            Button("选择") { isSelecting = true }
+                            Button {
+                                showPicker = true
+                            } label: {
+                                Image(systemName: "plus")
+                            }
+                        }
                     }
                 }
             }
@@ -64,6 +91,12 @@ struct VaultView: View {
                     deleting = nil
                 }
                 Button("取消", role: .cancel) { deleting = nil }
+            } message: {
+                Text("将从本机彻底删除，且不可恢复。")
+            }
+            .confirmationDialog("确认删除所选 \(selectedIDs.count) 项", isPresented: $confirmBatchDelete) {
+                Button("删除 \(selectedIDs.count) 项", role: .destructive) { deleteSelected() }
+                Button("取消", role: .cancel) {}
             } message: {
                 Text("将从本机彻底删除，且不可恢复。")
             }
@@ -99,8 +132,19 @@ struct VaultView: View {
                     ThumbnailView(item: item)
                         .aspectRatio(1, contentMode: .fit)
                         .clipped()
+                        .overlay(alignment: .topTrailing) {
+                            if isSelecting {
+                                Image(systemName: selectedIDs.contains(item.id) ? "checkmark.circle.fill" : "circle")
+                                    .font(.title2)
+                                    .foregroundColor(selectedIDs.contains(item.id) ? .blue : .white)
+                                    .shadow(radius: 1)
+                                    .padding(5)
+                            }
+                        }
                         .onTapGesture {
-                            if item.kind == .photo {
+                            if isSelecting {
+                                toggleSelection(item)
+                            } else if item.kind == .photo {
                                 openGallery(at: item)
                             } else {
                                 viewingVideo = item
@@ -122,6 +166,61 @@ struct VaultView: View {
             }
             .padding(3)
         }
+    }
+
+    private var selectionBar: some View {
+        HStack {
+            Button {
+                restoreSelected()
+            } label: {
+                VStack(spacing: 2) {
+                    Image(systemName: "square.and.arrow.up")
+                    Text("恢复")
+                }
+            }
+            .disabled(selectedIDs.isEmpty)
+
+            Spacer()
+
+            Button(role: .destructive) {
+                confirmBatchDelete = true
+            } label: {
+                VStack(spacing: 2) {
+                    Image(systemName: "trash")
+                    Text("删除")
+                }
+            }
+            .disabled(selectedIDs.isEmpty)
+        }
+        .font(.footnote)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
+    }
+
+    private func toggleSelection(_ item: VaultItem) {
+        if selectedIDs.contains(item.id) {
+            selectedIDs.remove(item.id)
+        } else {
+            selectedIDs.insert(item.id)
+        }
+    }
+
+    private func restoreSelected() {
+        let selected = store.items.filter { selectedIDs.contains($0.id) }
+        for item in selected {
+            store.restore(item)
+        }
+        selectedIDs.removeAll()
+        isSelecting = false
+    }
+
+    private func deleteSelected() {
+        let selected = store.items.filter { selectedIDs.contains($0.id) }
+        for item in selected {
+            store.delete(item)
+        }
+        selectedIDs.removeAll()
+        isSelecting = false
     }
 
     private func openGallery(at item: VaultItem) {
