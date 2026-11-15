@@ -1,0 +1,35 @@
+name: Build TrollStore IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Release (unsigned)
+        run: |
+          xcodebuild \
+            -project HiddenReader.xcodeproj \
+            -scheme HiddenReader \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package IPA
+        run: |
+          APP="build/Build/Products/Release-iphoneos/HiddenReader.app"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -r HiddenReader.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HiddenReader.ipa
+          path: HiddenReader.ipa
