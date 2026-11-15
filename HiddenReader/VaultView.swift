@@ -68,10 +68,10 @@ struct VaultView: View {
             } message: {
                 Text("将从本机彻底删除，且不可恢复。")
             }
-            .alert("提示", isPresented: $showAlert) {
-                Button("好", role: .cancel) {}
-            } message: {
-                Text(store.lastError ?? "")
+            .alert(isPresented: $showAlert) {
+                Alert(title: Text("提示"),
+                      message: Text(store.lastError ?? ""),
+                      dismissButton: .default(Text("好")))
             }
             .onChange(of: store.lastError) { _ in
                 if store.lastError != nil { showAlert = true }
