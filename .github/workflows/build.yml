@@ -22,6 +22,18 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build
 
+      - name: Fake-sign app (ldid)
+        run: |
+          APP="build/Build/Products/Release-iphoneos/HiddenReader.app"
+          brew install ldid 2>/dev/null || true
+          if command -v ldid >/dev/null 2>&1; then
+            ldid -S "$APP/HiddenReader"
+            echo "ldid fakesign done"
+          else
+            codesign -f -s - "$APP"
+            echo "codesign ad-hoc done"
+          fi
+
       - name: Package IPA
         run: |
           APP="build/Build/Products/Release-iphoneos/HiddenReader.app"
