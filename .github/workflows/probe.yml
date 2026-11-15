@@ -1,8 +1,15 @@
-name: Probe
+name: Probe Xcode
+
 on:
   workflow_dispatch:
+
 jobs:
   probe:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
-      - run: echo "hello from ubuntu"
+      - name: List Xcode versions
+        run: |
+          echo "=== /Applications 里的 Xcode ==="
+          ls /Applications | grep -i xcode || echo "无"
+          echo "=== 默认 xcodebuild ==="
+          xcodebuild -version 2>&1 | head -3
