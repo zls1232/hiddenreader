@@ -14,6 +14,7 @@
 		B100000000000000000000B5 /* VaultView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F100000000000000000000A5 /* VaultView.swift */; };
 		B100000000000000000000B6 /* VaultStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F100000000000000000000A6 /* VaultStore.swift */; };
 		B100000000000000000000B7 /* MovieFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = F100000000000000000000A7 /* MovieFile.swift */; };
+		B100000000000000000000B8 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F100000000000000000000A8 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -24,6 +25,7 @@
 		F100000000000000000000A5 /* VaultView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultView.swift; sourceTree = "<group>"; };
 		F100000000000000000000A6 /* VaultStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultStore.swift; sourceTree = "<group>"; };
 		F100000000000000000000A7 /* MovieFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovieFile.swift; sourceTree = "<group>"; };
+		F100000000000000000000A8 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		F100000000000000000000A9 /* HiddenReader.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HiddenReader.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -56,6 +58,7 @@
 				F100000000000000000000A5 /* VaultView.swift */,
 				F100000000000000000000A6 /* VaultStore.swift */,
 				F100000000000000000000A7 /* MovieFile.swift */,
+				F100000000000000000000A8 /* Assets.xcassets */,
 			);
 			path = HiddenReader;
 			sourceTree = "<group>";
@@ -126,6 +129,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B100000000000000000000B8 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -191,6 +195,7 @@
 		C10000000000000000000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -218,6 +223,7 @@
 		C10000000000000000000004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
