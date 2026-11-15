@@ -97,7 +97,7 @@ struct VaultView: View {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 3), count: 3), spacing: 3) {
                 ForEach(store.items) { item in
                     ThumbnailView(item: item)
-                        .aspectRatio(1, contentMode: .fill)
+                        .aspectRatio(1, contentMode: .fit)
                         .clipped()
                         .onTapGesture {
                             if item.kind == .photo {
