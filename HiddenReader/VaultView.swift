@@ -289,7 +289,7 @@ struct ZoomableImageView: UIViewRepresentable {
     }
 
     func updateUIView(_ scrollView: UIScrollView, context: Context) {
-        context.coordinator.imageView.image = image
+        context.coordinator.imageView?.image = image
         scrollView.zoomScale = 1.0
     }
 

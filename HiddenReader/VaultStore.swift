@@ -66,18 +66,17 @@ final class VaultStore: ObservableObject {
             let provider = result.itemProvider
             do {
                 if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
-                    let data = try await provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier)
+                    let data = try await loadImageData(provider)
                     addFile(data: data, ext: dataExtension(data), kind: .photo)
                     if deleteOriginals, let id = result.assetIdentifier, !id.isEmpty {
                         identifiers.append(id)
                     }
                 } else if provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier)
                             || provider.hasItemConformingToTypeIdentifier(UTType.video.identifier) {
-                    if let url = try await loadVideoFile(provider) {
-                        moveFile(from: url, kind: .video)
-                        if deleteOriginals, let id = result.assetIdentifier, !id.isEmpty {
-                            identifiers.append(id)
-                        }
+                    let url = try await loadVideoFile(provider)
+                    moveFile(from: url, kind: .video)
+                    if deleteOriginals, let id = result.assetIdentifier, !id.isEmpty {
+                        identifiers.append(id)
                     }
                 }
             } catch {
@@ -91,14 +90,40 @@ final class VaultStore: ObservableObject {
         }
     }
 
-    private func loadVideoFile(_ provider: NSItemProvider) async throws -> URL? {
-        let type = UTType.movie.identifier
-        let url = try await provider.loadFileRepresentation(forTypeIdentifier: type)
-        let ext = url.pathExtension.isEmpty ? "mov" : url.pathExtension
-        let copy = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString + "." + ext)
-        try FileManager.default.copyItem(at: url, to: copy)
-        return copy
+    private func loadImageData(_ provider: NSItemProvider) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let data {
+                    continuation.resume(returning: data)
+                } else {
+                    continuation.resume(throwing: NSError(domain: "import", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法读取图片"]))
+                }
+            }
+        }
+    }
+
+    private func loadVideoFile(_ provider: NSItemProvider) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let url {
+                    let ext = url.pathExtension.isEmpty ? "mov" : url.pathExtension
+                    let copy = FileManager.default.temporaryDirectory
+                        .appendingPathComponent(UUID().uuidString + "." + ext)
+                    do {
+                        try FileManager.default.copyItem(at: url, to: copy)
+                        continuation.resume(returning: copy)
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                } else {
+                    continuation.resume(throwing: NSError(domain: "import", code: 2, userInfo: [NSLocalizedDescriptionKey: "无法读取视频"]))
+                }
+            }
+        }
     }
 
     private func dataExtension(_ data: Data) -> String {
