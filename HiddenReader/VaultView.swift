@@ -4,6 +4,18 @@ import AVKit
 import AVFoundation
 import UIKit
 
+enum MoveContext: Identifiable {
+    case single(VaultItem)
+    case batch(Set<UUID>)
+
+    var id: String {
+        switch self {
+        case .single(let item): return item.id.uuidString
+        case .batch: return "batch"
+        }
+    }
+}
+
 // MARK: - 主界面（资料库）
 struct VaultView: View {
     @Environment(\.dismiss) private var dismiss
@@ -18,11 +30,16 @@ struct VaultView: View {
     @State private var isSelecting = false
     @State private var selectedIDs: Set<UUID> = []
     @State private var confirmBatchDelete = false
+    @State private var showNewFolderAlert = false
+    @State private var newFolderName = ""
+    @State private var moveContext: MoveContext?
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                if store.items.isEmpty {
+                folderTabs
+
+                if store.filteredItems.isEmpty {
                     emptyView
                 } else {
                     grid
@@ -52,11 +69,11 @@ struct VaultView: View {
                 }
                 ToolbarItem(placement: .primaryAction) {
                     if isSelecting {
-                        Button(selectedIDs.count == store.items.count ? "取消全选" : "全选") {
-                            if selectedIDs.count == store.items.count {
+                        Button(selectedIDs.count == store.filteredItems.count ? "取消全选" : "全选") {
+                            if selectedIDs.count == store.filteredItems.count {
                                 selectedIDs.removeAll()
                             } else {
-                                selectedIDs = Set(store.items.map { $0.id })
+                                selectedIDs = Set(store.filteredItems.map { $0.id })
                             }
                         }
                     } else {
@@ -73,7 +90,25 @@ struct VaultView: View {
             }
             .sheet(isPresented: $showPicker) {
                 PHPickerView { results in
-                    Task { await store.importResults(results) }
+                    let target: String
+                    if case .folder(let name) = store.currentSection {
+                        target = name
+                    } else {
+                        target = VaultStore.defaultFolder
+                    }
+                    Task { await store.importResults(results, into: target) }
+                }
+            }
+            .sheet(item: $moveContext) { context in
+                FolderPickerView(folders: [VaultStore.defaultFolder] + store.customFolders, title: "移动到") { folder in
+                    switch context {
+                    case .single(let item):
+                        store.move(item, to: folder)
+                    case .batch(let ids):
+                        store.moveItems(ids, to: folder)
+                    }
+                    selectedIDs.removeAll()
+                    isSelecting = false
                 }
             }
             .fullScreenCover(isPresented: $showGallery) {
@@ -95,10 +130,27 @@ struct VaultView: View {
                 Text("将从本机彻底删除，且不可恢复。")
             }
             .confirmationDialog("确认删除所选 \(selectedIDs.count) 项", isPresented: $confirmBatchDelete) {
-                Button("删除 \(selectedIDs.count) 项", role: .destructive) { deleteSelected() }
+                Button("删除 \(selectedIDs.count) 项", role: .destructive) {
+                    store.deleteItems(selectedIDs)
+                    selectedIDs.removeAll()
+                    isSelecting = false
+                }
                 Button("取消", role: .cancel) {}
             } message: {
                 Text("将从本机彻底删除，且不可恢复。")
+            }
+            .alert("新建文件夹", isPresented: $showNewFolderAlert) {
+                TextField("文件夹名称", text: $newFolderName)
+                Button("创建") {
+                    let trimmed = newFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if store.createFolder(trimmed) {
+                        store.currentSection = .folder(trimmed)
+                    }
+                    newFolderName = ""
+                }
+                Button("取消", role: .cancel) { newFolderName = "" }
+            } message: {
+                Text("给新文件夹起个名字")
             }
             .alert("提示", isPresented: $showAlert) {
                 Button("好", role: .cancel) {}
@@ -111,12 +163,63 @@ struct VaultView: View {
         }
     }
 
+    // MARK: - 顶部文件夹标签栏
+    private var folderTabs: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                tabChip("收藏夹", section: .favorites, icon: "star.fill")
+                tabChip(VaultStore.defaultFolder, section: .folder(VaultStore.defaultFolder), icon: "folder.fill")
+                ForEach(store.customFolders, id: \.self) { folder in
+                    tabChip(folder, section: .folder(folder), icon: "folder")
+                }
+                Button {
+                    showNewFolderAlert = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus")
+                        Text("新建")
+                    }
+                    .font(.footnote)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Color(.systemGray5))
+                    .clipShape(Capsule())
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 10)
+        }
+    }
+
+    private func tabChip(_ label: String, section: VaultSection, icon: String) -> some View {
+        let selected = store.currentSection == section
+        return Button {
+            store.currentSection = section
+            if isSelecting {
+                selectedIDs.removeAll()
+                isSelecting = false
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                Text(label)
+            }
+            .font(.footnote)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(selected ? Color.accentColor : Color(.systemGray5))
+            .foregroundColor(selected ? .white : .primary)
+            .clipShape(Capsule())
+        }
+    }
+
+    // MARK: - 空状态
     private var emptyView: some View {
         VStack(spacing: 12) {
             Image(systemName: "lock.fill")
                 .font(.system(size: 44))
                 .foregroundColor(.secondary)
-            Text("暂无内容")
+            Text(emptyTitle)
                 .foregroundColor(.secondary)
             Text("点右上角 + 导入照片或视频")
                 .font(.footnote)
@@ -125,13 +228,24 @@ struct VaultView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var emptyTitle: String {
+        switch store.currentSection {
+        case .favorites:
+            return "收藏夹还是空的"
+        case .folder(let name):
+            return "「\(name)」还没有内容"
+        }
+    }
+
+    // MARK: - 网格
     private var grid: some View {
         ScrollView {
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 3), count: 3), spacing: 3) {
-                ForEach(store.items) { item in
-                    ThumbnailView(item: item)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
+                ForEach(store.filteredItems) { item in
+                    Color.clear
                         .aspectRatio(1, contentMode: .fit)
-                        .clipped()
+                        .overlay(ThumbnailView(item: item))
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
                         .overlay(alignment: .topTrailing) {
                             if isSelecting {
                                 Image(systemName: selectedIDs.contains(item.id) ? "checkmark.circle.fill" : "circle")
@@ -141,6 +255,7 @@ struct VaultView: View {
                                     .padding(5)
                             }
                         }
+                        .contentShape(Rectangle())
                         .onTapGesture {
                             if isSelecting {
                                 toggleSelection(item)
@@ -151,6 +266,16 @@ struct VaultView: View {
                             }
                         }
                         .contextMenu {
+                            Button {
+                                store.toggleFavorite(item)
+                            } label: {
+                                Label(item.isFavorite ? "取消收藏" : "收藏", systemImage: item.isFavorite ? "star.slash" : "star")
+                            }
+                            Button {
+                                moveContext = .single(item)
+                            } label: {
+                                Label("移动到文件夹", systemImage: "folder")
+                            }
                             Button {
                                 store.restore(item)
                             } label: {
@@ -164,19 +289,39 @@ struct VaultView: View {
                         }
                 }
             }
-            .padding(3)
+            .padding(2)
         }
     }
 
+    // MARK: - 多选操作栏
     private var selectionBar: some View {
         HStack {
             Button {
-                restoreSelected()
+                moveContext = .batch(selectedIDs)
             } label: {
-                VStack(spacing: 2) {
-                    Image(systemName: "square.and.arrow.up")
-                    Text("恢复")
-                }
+                VStack(spacing: 2) { Image(systemName: "folder"); Text("移动") }
+            }
+            .disabled(selectedIDs.isEmpty)
+
+            Spacer()
+
+            Button {
+                store.setFavorite(selectedIDs, true)
+                selectedIDs.removeAll()
+                isSelecting = false
+            } label: {
+                VStack(spacing: 2) { Image(systemName: "star"); Text("收藏") }
+            }
+            .disabled(selectedIDs.isEmpty)
+
+            Spacer()
+
+            Button {
+                store.restoreItems(selectedIDs)
+                selectedIDs.removeAll()
+                isSelecting = false
+            } label: {
+                VStack(spacing: 2) { Image(systemName: "square.and.arrow.up"); Text("恢复") }
             }
             .disabled(selectedIDs.isEmpty)
 
@@ -185,15 +330,12 @@ struct VaultView: View {
             Button(role: .destructive) {
                 confirmBatchDelete = true
             } label: {
-                VStack(spacing: 2) {
-                    Image(systemName: "trash")
-                    Text("删除")
-                }
+                VStack(spacing: 2) { Image(systemName: "trash"); Text("删除") }
             }
             .disabled(selectedIDs.isEmpty)
         }
         .font(.footnote)
-        .padding(.horizontal, 24)
+        .padding(.horizontal, 20)
         .padding(.vertical, 10)
     }
 
@@ -205,32 +347,52 @@ struct VaultView: View {
         }
     }
 
-    private func restoreSelected() {
-        let selected = store.items.filter { selectedIDs.contains($0.id) }
-        for item in selected {
-            store.restore(item)
-        }
-        selectedIDs.removeAll()
-        isSelecting = false
-    }
-
-    private func deleteSelected() {
-        let selected = store.items.filter { selectedIDs.contains($0.id) }
-        for item in selected {
-            store.delete(item)
-        }
-        selectedIDs.removeAll()
-        isSelecting = false
-    }
-
     private func openGallery(at item: VaultItem) {
-        galleryPhotos = store.items.filter { $0.kind == .photo }
+        galleryPhotos = store.filteredItems.filter { $0.kind == .photo }
         galleryIndex = galleryPhotos.firstIndex(where: { $0.id == item.id }) ?? 0
         showGallery = true
     }
 }
 
-// MARK: - PHPicker 封装（拿可靠的 assetIdentifier）
+// MARK: - 文件夹选择
+struct FolderPickerView: View {
+    let folders: [String]
+    let title: String
+    var onSelect: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(folders, id: \.self) { folder in
+                    Button {
+                        onSelect(folder)
+                        dismiss()
+                    } label: {
+                        HStack {
+                            Image(systemName: "folder.fill")
+                                .foregroundColor(.yellow)
+                            Text(folder)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - PHPicker 封装
 struct PHPickerView: UIViewControllerRepresentable {
     var onPick: ([PHPickerResult]) -> Void
 
@@ -304,7 +466,7 @@ struct ThumbnailView: View {
     }
 }
 
-// MARK: - 全屏照片查看器（左右滑动 + 双指缩放）
+// MARK: - 全屏照片查看器
 struct PhotoGalleryView: View {
     let items: [VaultItem]
     let startIndex: Int

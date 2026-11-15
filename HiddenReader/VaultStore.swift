@@ -4,11 +4,19 @@ import PhotosUI
 import Photos
 import UniformTypeIdentifiers
 
+// 资料库分区：收藏夹 或 某个文件夹
+enum VaultSection: Hashable {
+    case favorites
+    case folder(String)
+}
+
 struct VaultItem: Identifiable, Codable, Equatable {
     let id: UUID
     let fileName: String
     let kind: Kind
     let dateAdded: Date
+    var folder: String
+    var isFavorite: Bool
 
     enum Kind: String, Codable {
         case photo
@@ -18,17 +26,47 @@ struct VaultItem: Identifiable, Codable, Equatable {
     var fileURL: URL {
         VaultStore.vaultDirectory.appendingPathComponent(fileName)
     }
+
+    enum CodingKeys: String, CodingKey {
+        case id, fileName, kind, dateAdded, folder, isFavorite
+    }
+
+    init(id: UUID = UUID(), fileName: String, kind: Kind, dateAdded: Date = Date(),
+         folder: String = VaultStore.defaultFolder, isFavorite: Bool = false) {
+        self.id = id
+        self.fileName = fileName
+        self.kind = kind
+        self.dateAdded = dateAdded
+        self.folder = folder
+        self.isFavorite = isFavorite
+    }
+
+    // 兼容旧数据（没有 folder / isFavorite 字段）
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        fileName = try c.decode(String.self, forKey: .fileName)
+        kind = try c.decode(Kind.self, forKey: .kind)
+        dateAdded = try c.decode(Date.self, forKey: .dateAdded)
+        folder = try c.decodeIfPresent(String.self, forKey: .folder) ?? VaultStore.defaultFolder
+        isFavorite = try c.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+    }
 }
 
 final class VaultStore: ObservableObject {
+    static let defaultFolder = "默认"
+
     static let vaultDirectory: URL = {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return docs.appendingPathComponent("HiddenVault", isDirectory: true)
     }()
 
     private static let indexFile = vaultDirectory.appendingPathComponent("index.json")
+    private static let foldersFile = vaultDirectory.appendingPathComponent("folders.json")
 
     @Published var items: [VaultItem] = []
+    @Published var customFolders: [String] = []
+    @Published var currentSection: VaultSection = .folder(defaultFolder)
     @Published var isImporting = false
     @Published var deleteOriginals = true
     @Published var lastError: String?
@@ -36,9 +74,19 @@ final class VaultStore: ObservableObject {
     init() {
         try? FileManager.default.createDirectory(at: Self.vaultDirectory, withIntermediateDirectories: true)
         loadIndex()
+        loadFolders()
     }
 
-    // MARK: - 索引持久化
+    var filteredItems: [VaultItem] {
+        switch currentSection {
+        case .favorites:
+            return items.filter { $0.isFavorite }
+        case .folder(let name):
+            return items.filter { $0.folder == name }
+        }
+    }
+
+    // MARK: - 持久化
     private func loadIndex() {
         guard let data = try? Data(contentsOf: Self.indexFile),
               let decoded = try? JSONDecoder().decode([VaultItem].self, from: data) else {
@@ -54,9 +102,24 @@ final class VaultStore: ObservableObject {
         }
     }
 
-    // MARK: - 导入（用 PHPickerResult 拿可靠的 assetIdentifier）
+    private func loadFolders() {
+        if let data = try? Data(contentsOf: Self.foldersFile),
+           let arr = try? JSONDecoder().decode([String].self, from: data) {
+            customFolders = arr
+        } else {
+            customFolders = []
+        }
+    }
+
+    private func saveFolders() {
+        if let data = try? JSONEncoder().encode(customFolders) {
+            try? data.write(to: Self.foldersFile, options: .atomic)
+        }
+    }
+
+    // MARK: - 导入
     @MainActor
-    func importResults(_ results: [PHPickerResult]) async {
+    func importResults(_ results: [PHPickerResult], into folder: String) async {
         isImporting = true
         defer { isImporting = false }
 
@@ -67,14 +130,14 @@ final class VaultStore: ObservableObject {
             do {
                 if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
                     let data = try await loadImageData(provider)
-                    addFile(data: data, ext: dataExtension(data), kind: .photo)
+                    addFile(data: data, ext: dataExtension(data), kind: .photo, folder: folder)
                     if deleteOriginals, let id = result.assetIdentifier, !id.isEmpty {
                         identifiers.append(id)
                     }
                 } else if provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier)
                             || provider.hasItemConformingToTypeIdentifier(UTType.video.identifier) {
                     let url = try await loadVideoFile(provider)
-                    moveFile(from: url, kind: .video)
+                    moveFile(from: url, kind: .video, folder: folder)
                     if deleteOriginals, let id = result.assetIdentifier, !id.isEmpty {
                         identifiers.append(id)
                     }
@@ -140,31 +203,75 @@ final class VaultStore: ObservableObject {
         return "jpg"
     }
 
-    private func addFile(data: Data, ext: String, kind: VaultItem.Kind) {
+    private func addFile(data: Data, ext: String, kind: VaultItem.Kind, folder: String) {
         let name = UUID().uuidString + "." + ext
         let dest = Self.vaultDirectory.appendingPathComponent(name)
         do {
             try data.write(to: dest, options: .atomic)
-            items.insert(VaultItem(id: UUID(), fileName: name, kind: kind, dateAdded: Date()), at: 0)
+            items.insert(VaultItem(id: UUID(), fileName: name, kind: kind, dateAdded: Date(), folder: folder), at: 0)
         } catch {
             lastError = error.localizedDescription
         }
     }
 
-    private func moveFile(from url: URL, kind: VaultItem.Kind) {
+    private func moveFile(from url: URL, kind: VaultItem.Kind, folder: String) {
         let name = UUID().uuidString + "." + (url.pathExtension.isEmpty ? "mov" : url.pathExtension)
         let dest = Self.vaultDirectory.appendingPathComponent(name)
         do {
             try FileManager.default.moveItem(at: url, to: dest)
-            items.insert(VaultItem(id: UUID(), fileName: name, kind: kind, dateAdded: Date()), at: 0)
+            items.insert(VaultItem(id: UUID(), fileName: name, kind: kind, dateAdded: Date(), folder: folder), at: 0)
         } catch {
             do {
                 try FileManager.default.copyItem(at: url, to: dest)
-                items.insert(VaultItem(id: UUID(), fileName: name, kind: kind, dateAdded: Date()), at: 0)
+                items.insert(VaultItem(id: UUID(), fileName: name, kind: kind, dateAdded: Date(), folder: folder), at: 0)
             } catch {
                 lastError = error.localizedDescription
             }
         }
+    }
+
+    // MARK: - 文件夹
+    func createFolder(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        guard trimmed != Self.defaultFolder, trimmed != "收藏夹" else { return false }
+        guard !customFolders.contains(trimmed) else { return false }
+        customFolders.append(trimmed)
+        saveFolders()
+        return true
+    }
+
+    // MARK: - 移动 / 收藏
+    func move(_ item: VaultItem, to folder: String) {
+        if let idx = items.firstIndex(where: { $0.id == item.id }) {
+            items[idx].folder = folder
+            saveIndex()
+        }
+    }
+
+    func moveItems(_ ids: Set<UUID>, to folder: String) {
+        for id in ids {
+            if let idx = items.firstIndex(where: { $0.id == id }) {
+                items[idx].folder = folder
+            }
+        }
+        saveIndex()
+    }
+
+    func toggleFavorite(_ item: VaultItem) {
+        if let idx = items.firstIndex(where: { $0.id == item.id }) {
+            items[idx].isFavorite.toggle()
+            saveIndex()
+        }
+    }
+
+    func setFavorite(_ ids: Set<UUID>, _ value: Bool) {
+        for id in ids {
+            if let idx = items.firstIndex(where: { $0.id == id }) {
+                items[idx].isFavorite = value
+            }
+        }
+        saveIndex()
     }
 
     // MARK: - 删除系统相册原图
@@ -174,13 +281,8 @@ final class VaultStore: ObservableObject {
             lastError = "未获得完整相册访问权限，原图未删除。请在 设置-隐私与安全性-照片 中把『闲阅』权限改为『所有照片』后重试"
             return
         }
-
         let assets = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
-        guard assets.count > 0 else {
-            lastError = "原图已找不到（可能已被删除），可忽略"
-            return
-        }
-
+        guard assets.count > 0 else { return }
         await withCheckedContinuation { continuation in
             PHPhotoLibrary.shared().performChanges {
                 PHAssetChangeRequest.deleteAssets(assets)
@@ -193,7 +295,7 @@ final class VaultStore: ObservableObject {
         }
     }
 
-    // MARK: - 恢复到系统相册
+    // MARK: - 恢复到相册
     func restore(_ item: VaultItem) {
         Task {
             guard await ensureLibraryAccess() else {
@@ -222,10 +324,28 @@ final class VaultStore: ObservableObject {
         }
     }
 
+    func restoreItems(_ ids: Set<UUID>) {
+        for id in ids {
+            if let item = items.first(where: { $0.id == id }) {
+                restore(item)
+            }
+        }
+    }
+
     // MARK: - 删除
     func delete(_ item: VaultItem) {
         try? FileManager.default.removeItem(at: item.fileURL)
         items.removeAll { $0.id == item.id }
+        saveIndex()
+    }
+
+    func deleteItems(_ ids: Set<UUID>) {
+        for id in ids {
+            if let item = items.first(where: { $0.id == id }) {
+                try? FileManager.default.removeItem(at: item.fileURL)
+            }
+        }
+        items.removeAll { ids.contains($0.id) }
         saveIndex()
     }
 
@@ -236,7 +356,6 @@ final class VaultStore: ObservableObject {
         case .authorized:
             return true
         case .limited:
-            // 受限访问无法删除原图
             return false
         case .notDetermined:
             return await PHPhotoLibrary.requestAuthorization(for: .readWrite) == .authorized
