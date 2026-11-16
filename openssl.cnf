@@ -1,0 +1,16 @@
+[req]
+distinguished_name = dn
+x509_extensions = v3_ext
+prompt = no
+
+[dn]
+CN = Apple Distribution: DSH (0000000000)
+OU = 0000000000
+O = DSH
+C = US
+
+[v3_ext]
+basicConstraints = critical, CA:false
+keyUsage = critical, digitalSignature
+extendedKeyUsage = codeSigning
+1.2.840.113635.100.6.1.4 = DER:05:00

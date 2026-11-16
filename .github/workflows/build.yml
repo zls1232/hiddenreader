@@ -9,11 +9,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Show Xcode version
-        run: |
-          xcodebuild -version
-          ls /Applications | grep -i xcode || true
-
       - name: Build Release (unsigned)
         run: |
           xcodebuild \
@@ -26,6 +21,25 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             build
+
+      - name: Self-sign with distribution cert
+        run: |
+          set -e
+          APP="build/Build/Products/Release-iphoneos/HiddenReader.app"
+          # 1) 生成分发类型自签证书
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout key.pem -out cert.pem -days 3650 -config openssl.cnf
+          openssl pkcs12 -export -out cert.p12 -inkey key.pem -in cert.pem -passout pass:
+          # 2) 临时 keychain 导入并签名
+          security create-keychain -p "" sign.keychain
+          security default-keychain -s sign.keychain
+          security unlock-keychain -p "" sign.keychain
+          security import cert.p12 -k sign.keychain -P "" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" sign.keychain
+          codesign -f -s "Apple Distribution: DSH (0000000000)" \
+            --entitlements entitlements.plist "$APP"
+          # 3) 验证签名
+          codesign -dvv "$APP" 2>&1 | head -20 || true
 
       - name: Package IPA
         run: |
