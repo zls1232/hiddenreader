@@ -54,6 +54,11 @@ struct VaultView: View {
                         .padding(.vertical, 8)
                 }
             }
+            .overlay {
+                if store.isImporting {
+                    importingOverlay
+                }
+            }
             .navigationTitle(isSelecting ? "已选 \(selectedIDs.count) 项" : "资料库")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -157,10 +162,33 @@ struct VaultView: View {
             } message: {
                 Text(store.lastError ?? "")
             }
+            .alert("导入完成", isPresented: Binding(
+                get: { store.importDoneCount != nil },
+                set: { if !$0 { store.importDoneCount = nil } }
+            )) {
+                Button("好", role: .cancel) { store.importDoneCount = nil }
+            } message: {
+                Text("已导入 \(store.importDoneCount ?? 0) 项")
+            }
             .onChange(of: store.lastError) { _ in
                 if store.lastError != nil { showAlert = true }
             }
         }
+    }
+
+    private var importingOverlay: some View {
+        VStack(spacing: 10) {
+            ProgressView()
+            if let p = store.importProgress {
+                Text("正在导入 \(p.done) / \(p.total)")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(24)
+        .background(Color(.systemBackground).opacity(0.95))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .shadow(radius: 10)
     }
 
     // MARK: - 顶部文件夹标签栏

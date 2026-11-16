@@ -68,6 +68,8 @@ final class VaultStore: ObservableObject {
     @Published var customFolders: [String] = []
     @Published var currentSection: VaultSection = .folder(defaultFolder)
     @Published var isImporting = false
+    @Published var importProgress: (done: Int, total: Int)? = nil
+    @Published var importDoneCount: Int? = nil
     @Published var deleteOriginals = true
     @Published var lastError: String?
 
@@ -121,59 +123,70 @@ final class VaultStore: ObservableObject {
     @MainActor
     func importResults(_ results: [PHPickerResult], into folder: String) async {
         isImporting = true
-        defer { isImporting = false }
+        importProgress = (0, results.count)
+        defer {
+            isImporting = false
+            importProgress = nil
+        }
 
         var identifiers: [String] = []
+        var newItems: [VaultItem] = []
+        var done = 0
 
         for result in results {
             let provider = result.itemProvider
             do {
                 if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
-                    let data = try await loadImageData(provider)
-                    addFile(data: data, ext: dataExtension(data), kind: .photo, folder: folder)
-                    if deleteOriginals, let id = result.assetIdentifier, !id.isEmpty {
-                        identifiers.append(id)
+                    if let name = try await importFile(provider, typeIdentifier: UTType.image.identifier, kind: .photo) {
+                        newItems.append(VaultItem(id: UUID(), fileName: name, kind: .photo, dateAdded: Date(), folder: folder))
+                        if deleteOriginals, let id = result.assetIdentifier, !id.isEmpty { identifiers.append(id) }
                     }
                 } else if provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier)
                             || provider.hasItemConformingToTypeIdentifier(UTType.video.identifier) {
-                    let url = try await loadVideoFile(provider)
-                    moveFile(from: url, kind: .video, folder: folder)
-                    if deleteOriginals, let id = result.assetIdentifier, !id.isEmpty {
-                        identifiers.append(id)
+                    if let name = try await importFile(provider, typeIdentifier: UTType.movie.identifier, kind: .video) {
+                        newItems.append(VaultItem(id: UUID(), fileName: name, kind: .video, dateAdded: Date(), folder: folder))
+                        if deleteOriginals, let id = result.assetIdentifier, !id.isEmpty { identifiers.append(id) }
                     }
                 }
             } catch {
                 lastError = error.localizedDescription
             }
+            done += 1
+            importProgress = (done, results.count)
         }
-        saveIndex()
+
+        if !newItems.isEmpty {
+            items.insert(contentsOf: newItems, at: 0)
+            saveIndex()
+            importDoneCount = newItems.count
+        }
 
         if !identifiers.isEmpty {
             await deleteOriginals(with: identifiers)
         }
     }
 
-    private func loadImageData(_ provider: NSItemProvider) async throws -> Data {
-        try await withCheckedThrowingContinuation { continuation in
-            provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else if let data {
-                    continuation.resume(returning: data)
-                } else {
-                    continuation.resume(throwing: NSError(domain: "import", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法读取图片"]))
-                }
-            }
+    // 用 loadFileRepresentation 直接搬文件（比 loadData 快、省内存）
+    private func importFile(_ provider: NSItemProvider, typeIdentifier: String, kind: VaultItem.Kind) async throws -> String? {
+        let tempURL = try await loadFile(provider, typeIdentifier: typeIdentifier)
+        let ext = finalExtension(for: tempURL, kind: kind)
+        let name = UUID().uuidString + "." + ext
+        let dest = Self.vaultDirectory.appendingPathComponent(name)
+        do {
+            try FileManager.default.moveItem(at: tempURL, to: dest)
+        } catch {
+            try FileManager.default.copyItem(at: tempURL, to: dest)
         }
+        return name
     }
 
-    private func loadVideoFile(_ provider: NSItemProvider) async throws -> URL {
+    private func loadFile(_ provider: NSItemProvider, typeIdentifier: String) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
-            provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, error in
+            provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { url, error in
                 if let error {
                     continuation.resume(throwing: error)
                 } else if let url {
-                    let ext = url.pathExtension.isEmpty ? "mov" : url.pathExtension
+                    let ext = url.pathExtension.isEmpty ? "dat" : url.pathExtension
                     let copy = FileManager.default.temporaryDirectory
                         .appendingPathComponent(UUID().uuidString + "." + ext)
                     do {
@@ -183,51 +196,31 @@ final class VaultStore: ObservableObject {
                         continuation.resume(throwing: error)
                     }
                 } else {
-                    continuation.resume(throwing: NSError(domain: "import", code: 2, userInfo: [NSLocalizedDescriptionKey: "无法读取视频"]))
+                    continuation.resume(throwing: NSError(domain: "import", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法读取文件"]))
                 }
             }
         }
     }
 
-    private func dataExtension(_ data: Data) -> String {
-        let b = [UInt8](data.prefix(12))
+    private func finalExtension(for url: URL, kind: VaultItem.Kind) -> String {
+        if kind == .video {
+            return url.pathExtension.isEmpty ? "mov" : url.pathExtension
+        }
+        return detectImageExtension(at: url)
+    }
+
+    private func detectImageExtension(at url: URL) -> String {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return "jpg" }
+        defer { try? handle.close() }
+        let b = [UInt8](handle.readData(ofLength: 12))
         if b.starts(with: [0xFF, 0xD8]) { return "jpg" }
         if b.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "png" }
         if b.starts(with: [0x47, 0x49, 0x46]) { return "gif" }
         if b.count >= 12, b[4] == 0x66, b[5] == 0x74, b[6] == 0x79, b[7] == 0x70 {
             let brand = String(bytes: b[8..<12], encoding: .ascii) ?? ""
-            if brand.hasPrefix("heic") || brand.hasPrefix("heix") || brand.hasPrefix("mif1") || brand.hasPrefix("msf1") {
-                return "heic"
-            }
+            if brand.hasPrefix("heic") || brand.hasPrefix("heix") || brand.hasPrefix("mif1") || brand.hasPrefix("msf1") { return "heic" }
         }
         return "jpg"
-    }
-
-    private func addFile(data: Data, ext: String, kind: VaultItem.Kind, folder: String) {
-        let name = UUID().uuidString + "." + ext
-        let dest = Self.vaultDirectory.appendingPathComponent(name)
-        do {
-            try data.write(to: dest, options: .atomic)
-            items.insert(VaultItem(id: UUID(), fileName: name, kind: kind, dateAdded: Date(), folder: folder), at: 0)
-        } catch {
-            lastError = error.localizedDescription
-        }
-    }
-
-    private func moveFile(from url: URL, kind: VaultItem.Kind, folder: String) {
-        let name = UUID().uuidString + "." + (url.pathExtension.isEmpty ? "mov" : url.pathExtension)
-        let dest = Self.vaultDirectory.appendingPathComponent(name)
-        do {
-            try FileManager.default.moveItem(at: url, to: dest)
-            items.insert(VaultItem(id: UUID(), fileName: name, kind: kind, dateAdded: Date(), folder: folder), at: 0)
-        } catch {
-            do {
-                try FileManager.default.copyItem(at: url, to: dest)
-                items.insert(VaultItem(id: UUID(), fileName: name, kind: kind, dateAdded: Date(), folder: folder), at: 0)
-            } catch {
-                lastError = error.localizedDescription
-            }
-        }
     }
 
     // MARK: - 文件夹
